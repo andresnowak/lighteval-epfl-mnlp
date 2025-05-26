@@ -2,6 +2,14 @@ from lighteval.tasks.requests import Doc
 from lighteval.metrics.metrics import Metrics
 from lighteval.tasks.default_prompts import LETTER_INDICES
 from lighteval.tasks.lighteval_task import LightevalTaskConfig
+from .mnlp_mcqa_evals_mmlu import task_mmlu
+from .mnlp_mcqa_evals_mmlu_reasoning import task_mmlu_reasoning
+from .mnlp_mcqa_evals_mmlu_pro import task_mmlu_pro
+from .mnlp_mcqa_evals_arc_easy import task_arc_easy
+from .mnlp_mcqa_evals_arc_challenge import task_arc_challenge
+from .mnlp_mcqa_evals_gpqa import task_gpqa
+from .mnlp_mcqa_evals_musr import task_musr
+from .mnlp_mcqa_evals_nlp4education import task_nlp4education
 
 def mmlu_harness(line, task_name: str = None):
     topic = "knowledge and kills in advanced master-level STEM courses"
@@ -19,7 +27,7 @@ def mmlu_harness(line, task_name: str = None):
         instruction=f"The following are multiple choice questions (with answers) about {topic.replace('_', ' ')}.\n\n",
     )
 
-task = LightevalTaskConfig(
+task_example = LightevalTaskConfig(
     name="mnlp_mcqa_evals",
     prompt_function=mmlu_harness,
     suite=["community"],
@@ -31,8 +39,8 @@ task = LightevalTaskConfig(
     generation_size=-1,
     stop_sequence=None,
     trust_dataset=True,
-    limited_num_samples=10,  # Set to 0 to use all samples, specify a number to limit the number of samples for debugging purposes
+    limited_num_samples=0,  # Set to 0 to use all samples, specify a number to limit the number of samples for debugging purposes
 )
 
 # STORE YOUR EVALS
-TASKS_TABLE = [task]
+TASKS_TABLE = [task_example, task_mmlu, task_mmlu_pro, task_arc_easy, task_arc_challenge, task_gpqa, task_musr, task_nlp4education, task_mmlu_reasoning]
