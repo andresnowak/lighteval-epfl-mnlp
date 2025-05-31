@@ -7,8 +7,7 @@ import ast
 def mmlu_harness(line, task_name: str = None):
     topic = "knowledge and kills in advanced master-level STEM courses"
     prompt = f"The following are multiple choice questions (with answers) about {topic.replace('_', ' ')}.\n\n"
-    prompt += f"Narrative: {line['narrative']}" + "\n"
-    prompt += f"Question: {line['question']}" + "\n"
+    prompt += line["question"] + "\n"
     choices = ast.literal_eval(line["choices"])
     prompt += "".join([f"{key}. {choice}\n" for key, choice in zip(LETTER_INDICES, choices)])
     prompt += "Answer:"
@@ -18,7 +17,7 @@ def mmlu_harness(line, task_name: str = None):
     return Doc(
         task_name=task_name,
         query=prompt,
-        choices=doc_choices,
+        choices=[" A", " B", " C", " D"],
         gold_index=gold_ix,
         instruction=f"The following are multiple choice questions (with answers) about {topic.replace('_', ' ')}.\n\n",
     )

@@ -53,3 +53,12 @@ lighteval accelerate \
     --output-dir ../output \
     ../model_configs/mcqa_model.yaml \
 "community|mnlp_mcqa_evals_musr|0|0"
+
+
+lighteval accelerate \
+    --eval-mode lighteval \
+    --save-details \
+    --custom-tasks "./mnlp_mcqa_evaluation.py" \
+    --output-dir ../output \
+    ../model_configs/mcqa_model.yaml \
+"community|mnlp_mcqa_evals_math_qa|0|0"

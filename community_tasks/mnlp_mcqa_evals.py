@@ -3,6 +3,16 @@ from lighteval.metrics.metrics import Metrics
 from lighteval.tasks.default_prompts import LETTER_INDICES
 from lighteval.tasks.lighteval_task import LightevalTaskConfig
 
+from .mnlp_mcqa_evals_mmlu import task_mmlu
+from .mnlp_mcqa_evals_mmlu_pro import task_mmlu_pro
+from .mnlp_mcqa_evals_arc_easy import task_arc_easy
+from .mnlp_mcqa_evals_arc_challenge import task_arc_challenge
+from .mnlp_mcqa_evals_gpqa import task_gpqa
+from .mnlp_mcqa_evals_musr import task_musr
+from .mnlp_mcqa_evals_nlp4education import task_nlp4education
+from .mnlp_mcqa_evals_math_qa import task_math_qa
+
+
 def mmlu_harness(line, task_name: str = None):
     topic = "knowledge and kills in advanced master-level STEM courses"
     prompt = f"The following are multiple choice questions (with answers) about {topic.replace('_', ' ')}.\n\n"
@@ -35,4 +45,16 @@ task = LightevalTaskConfig(
 )
 
 # STORE YOUR EVALS
-TASKS_TABLE = [task]
+TASKS_TABLE = (
+    [
+        task,
+        task_mmlu,
+        task_mmlu_pro,
+        task_arc_easy,
+        task_arc_challenge,
+        task_gpqa,
+        task_musr,
+        task_nlp4education,
+        task_math_qa,
+    ],
+) 
