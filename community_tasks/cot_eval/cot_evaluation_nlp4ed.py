@@ -3,9 +3,22 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
 from tqdm import tqdm
 import re
+import argparse
+import json
+
+# ------------ ARGUMENTS ------------
+parser = argparse.ArgumentParser(description="Evaluate MCQA with CoT prompting.")
+parser.add_argument("--model-name", type=str, required=True, help="HF model name or path")
+parser.add_argument("--batch-size", type=int, default=16, help="Batch size for evaluation")
+parser.add_argument("--temperature", type=float, default=0.7, help="Sampling temperature")
+parser.add_argument("--top-p", type=float, default=1.0, help="Top-p (nucleus) sampling threshold")
+parser.add_argument("--do-sample", type=bool, default=True, help="Activate random sampling")
+
+args = parser.parse_args()
 
 # ------------ CONFIG ------------
-MODEL_NAME = "andresnowak/Qwen3-0.6B-instruction-finetuned_v2"
+MODEL_NAME = args.model_name
+BATCH_SIZE = args.batch_size
 DATASET = "igzi/nlp4education"
 SPLIT = "train"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -57,8 +70,10 @@ for i in tqdm(range(0, len(ds), BATCH_SIZE), desc="Evaluating"):
         output_ids = model.generate(
             **inputs,
             max_new_tokens=MAX_NEW_TOKENS,
-            do_sample=False,
-            pad_token_id=tokenizer.eos_token_id
+            do_sample=args.do_sample,  # Enable sampling
+            temperature=args.temperature,
+            top_p=args.top_p,
+            pad_token_id=tokenizer.eos_token_id,
         )
     for j, ex in enumerate(batch):
         # Get the generated output after the prompt
@@ -112,6 +127,24 @@ print(f"Combined Accuracy (with fallback): {combined_acc*100:.2f}%")
 print(f"CoT answer extraction failed on {no_answer}/{total} samples")
 
 # Optionally: save results for later inspection
-import json
-with open(f"qwen3_cot_nlp4edu_{SPLIT}_results.json", "w") as f:
-    json.dump(results, f, indent=2)
+
+output_data = {
+    "config": {
+        "model_name": args.model_name,
+        "batch_size": args.batch_size,
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+        "split": SPLIT,
+        "dataset": DATASET,
+    },
+    "metrics": {
+        "cot_accuracy": cot_acc,
+        "combined_accuracy": combined_acc,
+        "cot_failures": no_answer,
+        "total_samples": total,
+    },
+    "results": results,
+}
+
+with open(f"qwen3_cot_nlp4ed_{SPLIT}_results_{args.model_name}.json", "w") as f:
+    json.dump(output_data, f, indent=2)
