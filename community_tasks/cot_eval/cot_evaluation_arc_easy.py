@@ -5,7 +5,7 @@ from tqdm import tqdm
 import re
 
 # ------------ CONFIG ------------
-MODEL_NAME = "andresnowak/Qwen3-0.6B-instruction-finetuned"
+MODEL_NAME = "andresnowak/Qwen3-0.6B-instruction-finetuned_v2"
 DATASET = "allenai/ai2_arc"
 SPLIT = "test"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -57,8 +57,9 @@ for i in tqdm(range(0, len(ds), BATCH_SIZE), desc="Evaluating"):
         output_ids = model.generate(
             **inputs,
             max_new_tokens=MAX_NEW_TOKENS,
-            do_sample=False,
-            pad_token_id=tokenizer.eos_token_id
+            do_sample=True,  # Enable sampling
+            temperature=0.7,  # Add temperature (typical values: 0.5-1.0)
+            pad_token_id=tokenizer.eos_token_id,
         )
     for j, ex in enumerate(batch):
         # Get the generated output after the prompt

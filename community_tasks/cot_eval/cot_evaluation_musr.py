@@ -7,7 +7,7 @@ import json
 import ast
 
 # ------------ CONFIG ------------
-MODEL_NAME = "andresnowak/Qwen3-0.6B-instruction-finetuned"
+MODEL_NAME = "andresnowak/Qwen3-0.6B-instruction-finetuned_v2"
 DATASET = "TAUR-Lab/MuSR"
 ALL_SPLITS = ["murder_mysteries", "object_placements","team_allocation"]
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"

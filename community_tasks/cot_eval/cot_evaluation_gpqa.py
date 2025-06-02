@@ -2,12 +2,13 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
 from tqdm import tqdm
+import random
 import re
 
 # ------------ CONFIG ------------
-MODEL_NAME = "andresnowak/Qwen3-0.6B-instruction-finetuned"
-DATASET = "TIGER-Lab/MMLU-STEM"
-SPLIT = "test"
+MODEL_NAME = "andresnowak/Qwen3-0.6B-instruction-finetuned_v2"
+DATASET = "Idavidrein/gpqa"
+SPLIT = "train"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MAX_NEW_TOKENS = 2048
 BATCH_SIZE = 32  # Try 8, 16, or more depending on GPU
@@ -32,7 +33,7 @@ COT_PROMPT = (
 )
 
 # ------------ LOAD DATASET ------------
-ds = load_dataset(DATASET, split=SPLIT).shuffle(42)
+ds = load_dataset(DATASET, "gpqa_main", split=SPLIT).shuffle(42)
 print(f"Loaded {len(ds)} samples from {DATASET} ({SPLIT})")
 
 # ------------ ANSWER EXTRACTION ------------
@@ -45,19 +46,26 @@ results = []
 correct = 0
 no_answer = 0
 fallback_correct = 0
+random.seed(42)
 
 for i in tqdm(range(0, len(ds), BATCH_SIZE), desc="Evaluating"):
     batch = [ds[j] for j in range(i, min(i+BATCH_SIZE, len(ds)))]
-    prompts = [
-        COT_PROMPT.format(
-            question=ex["question"],
-            A=ex["choices"][0],
-            B=ex["choices"][1],
-            C=ex["choices"][2],
-            D=ex["choices"][3],
-        )
-        for ex in batch
-    ]
+    prompts = []
+    answers = []
+    options_array = []
+    for ex in batch:
+        options = [ex["Correct Answer"], ex["Incorrect Answer 1"], ex["Incorrect Answer 2"], ex["Incorrect Answer 3"]]
+        gold_ix = random.randint(0, 3)
+        options[0], options[gold_ix] = options[gold_ix], options[0]
+        prompts.append(COT_PROMPT.format(
+            question=ex["Question"],
+            A=options[0],
+            B=options[1],
+            C=options[2],
+            D=options[3],
+        ))
+        options_array.append(options)
+        answers.append(gold_ix)
     inputs = tokenizer(prompts, padding=True, return_tensors="pt").to(DEVICE)
     with torch.no_grad():
         output_ids = model.generate(
@@ -71,8 +79,9 @@ for i in tqdm(range(0, len(ds), BATCH_SIZE), desc="Evaluating"):
         generated = output_ids[j][inputs["input_ids"].shape[1]:]
         output = tokenizer.decode(generated, skip_special_tokens=True)
         pred = extract_letter(output)
-        gt = LETTER_INDICES[ex["answer"]]
-        result = {"question": ex["question"], "gt": gt, "pred": pred, "output": output}
+        gt = LETTER_INDICES[answers[j]]
+        options = options_array[j]
+        result = {"question": ex["Question"], "gt": gt, "pred": pred, "output": output}
 
         if pred is not None:
             if pred == gt:
@@ -83,8 +92,8 @@ for i in tqdm(range(0, len(ds), BATCH_SIZE), desc="Evaluating"):
             # Format the prompt for direct answer
             direct_prompt = (
                 "The following are multiple choice questions (with answers) about knowledge and skills in advanced master-level STEM courses.\n\n"
-                f"{ex['question']}\n" +
-                "".join([f"{key}. {choice}\n" for key, choice in zip(LETTER_INDICES, ex["choices"])]) +
+                f"{ex['Question']}\n" +
+                "".join([f"{key}. {choice}\n" for key, choice in zip(LETTER_INDICES, options)]) +
                 "Answer:"
             )
             input_ids = tokenizer(direct_prompt, return_tensors="pt").to(DEVICE)
@@ -119,5 +128,5 @@ print(f"CoT answer extraction failed on {no_answer}/{total} samples")
 
 # Optionally: save results for later inspection
 import json
-with open(f"qwen3_cot_mmlu_stem_{SPLIT}_results.json", "w") as f:
+with open(f"qwen3_cot_gpqa_{SPLIT}_results.json", "w") as f:
     json.dump(results, f, indent=2)
