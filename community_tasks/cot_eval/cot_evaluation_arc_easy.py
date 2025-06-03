@@ -149,5 +149,5 @@ output_data = {
     "results": results,
 }
 
-with open(f"qwen3_cot_arc_easy_{SPLIT}_results_{args.model_name}.json", "w") as f:
+with open(f"qwen3_cot_arc_easy_{SPLIT}_results_{args.model_name.replace('/', '_')}.json", "w") as f:
     json.dump(output_data, f, indent=2)
