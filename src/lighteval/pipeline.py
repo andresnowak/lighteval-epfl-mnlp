@@ -503,7 +503,7 @@ class Pipeline:
         sample_id_to_responses: dict[(SampleUid, MetricCategory), list[ModelResponse]] = collections.defaultdict(list)
 
         if self.ref_model is not None:
-            self.ref_model._tokenizer.chat_template = self.model._tokenizer.chat_template
+            self.ref_model._tokenizer = self.model._tokenizer
 
         for request_type, requests in self.requests.items():
             if self.ref_model is not None:

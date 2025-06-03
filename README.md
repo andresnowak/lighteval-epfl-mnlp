@@ -53,7 +53,7 @@ git clone https://github.com/eric11eca/lighteval-epfl-mnlp.git
 Next, install from source with the `quantization` extras:
 ```bash
 cd lighteval-epfl-mnlp
-pip install -e .[quantization]
+pip install -e .[quantization]  # on h100, you can `pip install -e .[quantization,quantization_fbgemm]` to install fbgemm package
 ```
 
 Update the transformers version to `4.51.3`:

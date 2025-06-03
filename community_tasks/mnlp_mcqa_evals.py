@@ -24,8 +24,11 @@ def mmlu_harness(line, task_name: str = None):
     return Doc(
         task_name=task_name,
         query=prompt,
-        choices=[" A", " B", " C", " D"],
-        gold_index=gold_ix,
+        # For single token continuation
+        # choices = [" A", " B", " C", " D"]
+        # For multi-token continuation
+        choices = [f" {key}. {choice}" for key, choice in zip(LETTER_INDICES, line["choices"])],
+        gold_index=gold_idx,
         instruction=f"The following are multiple choice questions (with answers) about {topic.replace('_', ' ')}.\n\n",
     )
 

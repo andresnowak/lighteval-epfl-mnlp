@@ -182,6 +182,7 @@ class EmbeddingModel(TransformersModel):
         model_kwargs = {
             "device": "cuda" if torch.cuda.is_available() else "cpu", # Dynamically check cuda
             "model_kwargs": {"torch_dtype": torch_dtype}, # Correct nesting
+            "trust_remote_code": True
         }
         encode_kwargs = {
             "normalize_embeddings": config.similarity_fn == "cosine"

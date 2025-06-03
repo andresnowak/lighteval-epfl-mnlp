@@ -92,7 +92,8 @@ dependencies = [
 litellm = ["litellm", "diskcache"]
 tgi = ["text-generation>=0.6.0"]
 optimum = ["optimum==1.12.0"]
-quantization = ["bitsandbytes>=0.45.5", "autoawq>=0.2.8", "compressed-tensors>=0.9.3"]
+quantization = ["bitsandbytes>=0.45.5", "autoawq>=0.2.8", "compressed-tensors>=0.9.3", "optimum-quanto>=0.2.7"]
+quantization_fbgemm = ["fbgemm-gpu==1.2.0", "fbgemm-gpu-genai"]
 adapters = ["peft==0.3.0"]
 nanotron = [
   "nanotron",

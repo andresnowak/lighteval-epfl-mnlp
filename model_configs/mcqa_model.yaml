@@ -1,10 +1,10 @@
 model:
   base_params:
     # Change this to your own model name on huggingface hub
-    # (Optional) If you want to use a chat template, set "use_chat_template=true" after revision.
+    model_args: "pretrained=Qwen/Qwen3-0.6B,revision=main"
+    # (Optional) If you want to use a chat template, set "use_chat_template" to true.
     # (Optional) However, you must ensure that the chat template is saved in the model checkpoint.
-    # model_args: "pretrained=Qwen/Qwen3-0.6B,revision=main"
-    model_args: "pretrained=andresnowak/Qwen3-0.6B-instruction-finetuned,revision=main,trust_remote_code=true" # Change this to your own model name on huggingface hub
+    use_chat_template: true
     dtype: "float16"
     compile: false
 

@@ -49,6 +49,15 @@ from lighteval.tasks.requests import (
 
 logger = logging.getLogger(__name__)
 
+class DefaultDataset(Dataset):
+    def __init__(self, requests: list):
+        self.requests = requests
+
+    def __len__(self):
+        return len(self.requests)
+
+    def __getitem__(self, index):
+        return self.requests[index]
 
 class DynamicBatchDataset(Dataset):
     def __init__(

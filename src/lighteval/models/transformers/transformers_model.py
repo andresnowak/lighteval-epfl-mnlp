@@ -22,14 +22,17 @@
 
 import os
 import logging
+import itertools
 import numpy as np
 import warnings
+
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
 import transformers
+
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -39,12 +42,15 @@ from transformers import (
     AutoTokenizer,
     BitsAndBytesConfig,
     GPTQConfig,
-    PretrainedConfig,
+    PretrainedConfig
 )
 from transformers.generation.utils import GenerateOutput, GenerationConfig
 from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
+from huggingface_hub import HfApi
+from optimum.quanto import QuantizedModelForCausalLM
 
 from lighteval.data import (
+    DefaultDataset,
     GenerativeTaskDataset,
     LoglikelihoodDataset,
     LoglikelihoodSingleTokenDataset,
@@ -81,6 +87,14 @@ from lighteval.utils.utils import EnvConfig, as_list, boolstring_to_bool
 
 
 logger = logging.getLogger(__name__)
+
+
+try:
+    from optimum.quanto import QTensor
+    HAS_QUANTO = True
+except ImportError:
+    QTensor = object()  # Fallback to a unique object if optimum.quanto is not installed
+    HAS_QUANTO = False
 
 
 if is_accelerate_available():
@@ -163,9 +177,11 @@ class TransformersModelConfig:
     quantization_config: Optional[BitsAndBytesConfig] = None
     trust_remote_code: bool = False
     use_chat_template: bool = False
+    load_in_optimum: bool = False
     compile: bool = False
     generation_parameters: GenerationParameters = None
     generation_config: GenerationConfig = None
+    eval_mode: str = "lighteval"
 
     def __post_init__(self):
         # Making sure this parameter is a boolean
@@ -267,6 +283,8 @@ class TransformersModel(LightevalModel):
         self.accelerator = config.accelerator
         self._max_length = self._init_max_length(config.max_length)
         self.use_chat_template = config.use_chat_template
+        self.load_in_optimum = config.load_in_optimum
+        self.eval_mode = config.eval_mode
 
         self._add_special_tokens = config.add_special_tokens if config.add_special_tokens is not None else False
         self._tokenizer = self._create_auto_tokenizer(config, env_config)
@@ -441,6 +459,60 @@ class TransformersModel(LightevalModel):
             )
         return model_parallel, max_mem_this_process, device_map
 
+    def _bytes_of_tensor(self, t: torch.Tensor) -> int:
+        """
+        Return the true storage footprint of a tensor.
+
+        • TorchAO / Quanto subclasses override `.nbytes`, so the value already
+        reflects packed-int4 / int8 layouts or float-8, etc.
+        • For vanilla tensors fall back to numel * element_size.
+        """
+        try:
+            return t.nbytes
+        except AttributeError:
+            return t.nelement() * t.element_size()
+
+    def _get_model_actual_size_in_bytes(self, model: torch.nn.Module,
+                                        is_optimum_quantized: bool = False) -> int:
+        """
+        Raw number of bytes occupied by all parameters **and** buffers,
+        without double-counting shared storages.
+
+        Handles:
+        • Optimum/Quanto QTensor models
+        • TorchAO Int4 / Int8 / FP8 weight-only models
+        • 4- / 8-bit models (via `get_memory_footprint`)
+        • Ordinary FP32 / FP16 / BF16 models
+        """
+        seen_ptrs, total = set(), 0
+
+        if is_optimum_quantized and HAS_QUANTO:
+            for t in itertools.chain(model.parameters(), model.buffers()):
+                if t.is_meta or t.data_ptr() in seen_ptrs:
+                    continue
+                total += t.nbytes if isinstance(t, QTensor) else t.nelement() * t.element_size()
+                seen_ptrs.add(t.data_ptr())
+            return total
+
+        if hasattr(model, "get_memory_footprint"):
+            try:
+                fp = model.get_memory_footprint()
+                if fp > 0:
+                    return int(fp)
+            except Exception as exc:                      # noqa: BLE001
+                warnings.warn(f"get_memory_footprint() failed: {exc}. Falling back.")
+
+        for t in itertools.chain(model.parameters(), model.buffers()):
+            if t.is_meta:
+                continue
+            ptr = t.data_ptr()
+            if ptr in seen_ptrs:
+                continue
+            total += self._bytes_of_tensor(t)
+            seen_ptrs.add(ptr)
+
+        return total
+
     def _create_auto_model(
         self, config: TransformersModelConfig, env_config: EnvConfig
     ) -> transformers.PreTrainedModel:
@@ -480,40 +552,41 @@ class TransformersModel(LightevalModel):
         if "quantization_config" not in pretrained_config.to_dict():
             kwargs["quantization_config"] = config.quantization_config
 
-        model = AutoModelForCausalLM.from_pretrained(
-            config.pretrained,
-            revision=config.revision + (f"/{config.subfolder}" if config.subfolder is not None else ""),
-            max_memory=max_memory,
-            device_map=device_map,
-            torch_dtype=torch_dtype,
-            trust_remote_code=config.trust_remote_code,
-            cache_dir=env_config.cache_dir,
-            offload_folder=env_config.cache_dir,
-            token=env_config.token,
-            **kwargs,
+        api  = HfApi()
+        info = api.repo_info(
+            repo_id=config.pretrained,
+            files_metadata=True,
         )
 
-        def get_model_size(model):
-            param_size = 0
-            for param in model.parameters():
-                param_size += param.nelement() * param.element_size()
+        total_bytes = sum(f.size for f in info.siblings if f.size)
+        logger.info(f"Would download ~{total_bytes/2**30:.4f} GiB")
 
-            buffer_size = 0
-            for buffer in model.buffers():
-                buffer_size += buffer.nelement() * buffer.element_size()
-
-            size_mb = (param_size + buffer_size) / 1024 / 1024
-            return size_mb
-
-        model_size = get_model_size(model)
-
-        if config.quantization_config is not None and "quant_method" in config.quantization_config.to_dict():
-            logger.info(
-                f"Model loaded with quantization method {config.quantization_config.quant_method} has model size {model_size:.2f} MB"
+        if self.load_in_optimum:
+            model = QuantizedModelForCausalLM.from_pretrained(
+                config.pretrained,
+                revision=config.revision + (f"/{config.subfolder}" if config.subfolder is not None else ""),
+                cache_dir=env_config.cache_dir,
+                token=env_config.token
             )
+            model = model.to("cuda")
         else:
-            logger.info(f"Model loaded has model size {model_size:.2f} MB")
+            model = AutoModelForCausalLM.from_pretrained(
+                config.pretrained,
+                revision=config.revision + (f"/{config.subfolder}" if config.subfolder is not None else ""),
+                max_memory=max_memory,
+                device_map=device_map,
+                torch_dtype=torch_dtype,
+                trust_remote_code=config.trust_remote_code,
+                cache_dir=env_config.cache_dir,
+                offload_folder=env_config.cache_dir,
+                token=env_config.token,
+                **kwargs,
+            )
 
+        model_size_bytes = self._get_model_actual_size_in_bytes(
+            model, is_optimum_quantized=self.load_in_optimum)
+        model_size_mb = model_size_bytes / 1024 / 1024
+        logger.info(f"Model loaded has model size {model_size_mb:.2f} MB")
         return model
 
     def _create_auto_tokenizer(
@@ -554,6 +627,13 @@ class TransformersModel(LightevalModel):
         Raises:
             RecursionError: If an error occurs during tokenization, a fallback tokenizer with "<unk>" token will be created.
         """
+        if self.eval_mode == "dpo":
+            padding_side = "right"
+            truncation_side = "right"
+        else:
+            padding_side = "left"
+            truncation_side = "left"
+
         try:
             tokenizer = AutoTokenizer.from_pretrained(
                 model_name if tokenizer_name is None else tokenizer_name,
@@ -561,8 +641,8 @@ class TransformersModel(LightevalModel):
                 cache_dir=env_config.cache_dir,
                 token=env_config.token,
                 trust_remote_code=trust_remote_code,
-                padding_side="left",
-                truncation_side="left",
+                padding_side=padding_side,
+                truncation_side=truncation_side,
             )
         except RecursionError:
             tokenizer = AutoTokenizer.from_pretrained(
@@ -572,8 +652,8 @@ class TransformersModel(LightevalModel):
                 token=env_config.token,
                 trust_remote_code=trust_remote_code,
                 unk_token="<unk>",
-                padding_side="left",
-                truncation_side="left",
+                padding_side=padding_side,
+                truncation_side=truncation_side,
             )
         except FileNotFoundError:
             logger.warning(
@@ -584,12 +664,19 @@ class TransformersModel(LightevalModel):
                 revision=revision + (f"/{subfolder}" if subfolder is not None else ""),
                 token=env_config.token,
                 trust_remote_code=trust_remote_code,
-                padding_side="left",
-                truncation_side="left",
+                padding_side=padding_side,
+                truncation_side=truncation_side,
             )
+
         tokenizer.pad_token = tokenizer.eos_token
+
+        # if no BOS token, set as pad token, e.g. QWEN models
+        if self.eval_mode == "dpo" and tokenizer.bos_token is None:
+            tokenizer.bos_token_id = tokenizer.eos_token_id
+            tokenizer.pad_token_id = tokenizer.eos_token_id
+
         tokenizer.model_max_length = self._max_length
-        logger.info("Tokenizer truncation and padding size set to the left side.")
+        logger.info(f"Tokenizer padding_side set to '{tokenizer.padding_side}', truncation_side set to '{tokenizer.truncation_side}'.")
 
         return tokenizer
 
@@ -1185,7 +1272,7 @@ class TransformersModel(LightevalModel):
                     )
                     res.append(answer)
 
-                # print(f"Peak memory during inference: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
+                # peak_mem = torch.cuda.max_memory_allocated() / 1024**3
 
                 # Clean up GPUs
                 del model_output
@@ -1552,17 +1639,6 @@ class TransformersModel(LightevalModel):
             label_pad_token_id  for the prompt tokens.
         """
         batch = {}
-
-        # example = self._prepare_dialogue_from_tokenizer({
-        #     "prompt": request.context,
-        #     "chosen": request.chosen_continuation,
-        #     "rejected": request.rejected_continuation,
-        # })
-
-        # prompt = example["prompt"]
-        # chosen = example["chosen"]
-        # rejected = example["rejected"]
-
         prompt = request.context
         chosen = request.chosen_continuation
         rejected = request.rejected_continuation
@@ -1657,6 +1733,7 @@ class TransformersModel(LightevalModel):
     def concatenated_inputs(
         self,
         batch: Dict[str, Union[List, torch.LongTensor]],
+        label_pad_token_id: int = -100,
         padding_value: int = 0,
         device: Optional[torch.device] = None,
     ) -> Dict[str, torch.LongTensor]:
@@ -1665,6 +1742,7 @@ class TransformersModel(LightevalModel):
         Args:
             batch: A batch of data. Must contain the keys 'chosen_input_ids' and 'rejected_input_ids',
                 which are tensors of shape (batch_size, sequence_length).
+            label_pad_token_id: The padding value to use for the labels.
             padding_value: The padding value to use for the concatenated inputs_ids.
             device: The device for the concatenated inputs.
 
@@ -1676,7 +1754,9 @@ class TransformersModel(LightevalModel):
 
         for k in batch:
             if k.startswith("chosen") and isinstance(batch[k], torch.Tensor):
-                if k.endswith("_input_ids"):
+                if "labels" in k:
+                    pad_value = label_pad_token_id
+                elif k.endswith("_input_ids"):
                     pad_value = padding_value
                 elif k.endswith("_attention_mask"):
                     pad_value = 0
@@ -1684,7 +1764,9 @@ class TransformersModel(LightevalModel):
                 concatenated_batch[concatenated_key] = self.pad_to_length(batch[k], max_length, pad_value=pad_value)
         for k in batch:
             if k.startswith("rejected") and isinstance(batch[k], torch.Tensor):
-                if k.endswith("_input_ids"):
+                if "labels" in k:
+                    pad_value = label_pad_token_id
+                elif k.endswith("_input_ids"):
                     pad_value = padding_value
                 elif k.endswith("_attention_mask"):
                     pad_value = 0
@@ -1751,8 +1833,9 @@ class TransformersModel(LightevalModel):
         len_chosen = batch["chosen_labels"].shape[0]
         concatenated_batch = self.concatenated_inputs(
             batch,
-            padding_value=self.tokenizer.pad_token_id,
-            device=self.device,
+            label_pad_token_id=self.label_pad_token_id,
+            padding_value=self.padding_value,
+            device=self.device
         )
 
         all_logits = self.model(
@@ -1805,86 +1888,75 @@ class TransformersModel(LightevalModel):
             request.prompt_input_ids = batch["prompt_input_ids"]
             request.prompt_attention_mask = batch["prompt_attention_mask"]
 
-        dataset = LoglikelihoodDataset(requests=requests, num_dataset_splits=self.DATASET_SPLITS)
+        batch_size = override_bs if override_bs is not None else 1
+        dataset = DefaultDataset(requests=requests)
         res = []
 
-        for split_start, split_end in tqdm(dataset.splits_start_end_iterator()):
-            logger.info(f"Evaluating split {split_start} to {split_end}")
-            context_enc_chosen = dataset[0].chosen_input_ids
-            context_enc_rejected = dataset[0].chosen_attention_mask
+        dataloader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            collate_fn=DPODataCollatorWithPadding(
+                pad_token_id=self._tokenizer.pad_token_id,
+                label_pad_token_id=self.label_pad_token_id
+            ),
+            drop_last=False, shuffle=False)
+        if self.accelerator:
+            dataloader = self.accelerator.prepare(dataloader)
 
-            max_context = len(context_enc_chosen) + len(context_enc_rejected)
+        for batch in tqdm(dataloader, disable=self.disable_tqdm, position=1):
+            # Get the reference model log probabilities
+            ref_chosen_logps = batch.get("reference_chosen_logps", None)
+            ref_rejected_logps = batch.get("reference_rejected_logps", None)
 
-            batch_size = self._get_batch_size(
-                override_bs=override_bs,
-                max_input_length=max_context,
-            )
+            # Get the log probabilities
+            (
+                policy_chosen_logps,
+                policy_rejected_logps,
+                _,  # policy_chosen_logits,
+                _,  # policy_rejected_logits,
+            ) = self.concatenated_forward(
+                batch, ref_free=ref_chosen_logps is None)
 
-            dataloader = DataLoader(
-                dataset,
-                batch_size=batch_size,
-                collate_fn=DPODataCollatorWithPadding(
-                    pad_token_id=self._tokenizer.pad_token_id,
-                    label_pad_token_id=self.label_pad_token_id
-                ),
-                drop_last=False, shuffle=False)
-            if self.accelerator:
-                dataloader = self.accelerator.prepare(dataloader)
-
-            for batch in tqdm(dataloader, disable=self.disable_tqdm, position=1):
-                # Get the reference model log probabilities
-                ref_chosen_logps = batch.get("reference_chosen_logps", None)
-                ref_rejected_logps = batch.get("reference_rejected_logps", None)
-
-                # Get the log probabilities
-                (
-                    policy_chosen_logps,
-                    policy_rejected_logps,
-                    _,  # policy_chosen_logits,
-                    _,  # policy_rejected_logits,
-                ) = self.concatenated_forward(
-                    batch, ref_free=ref_chosen_logps is None)
-
-                if self.ref_free_norm == "none":
-                    if ref_chosen_logps is None:
-                        ref_chosen_logps = torch.zeros_like(policy_chosen_logps)
-                    else:
-                        ref_chosen_logps = ref_chosen_logps.to(self.device)
-                    if ref_rejected_logps is None:
-                        ref_rejected_logps = torch.zeros_like(policy_rejected_logps)
-                    else:
-                        ref_rejected_logps = ref_rejected_logps.to(self.device)
-
-                    # Compute the log ratios as rewards
-                    rewards_chosen = policy_chosen_logps.detach() - ref_chosen_logps.detach()
-                    rewards_rejected = policy_rejected_logps.detach() - ref_rejected_logps.detach()
+            if self.ref_free_norm == "none":
+                if ref_chosen_logps is None:
+                    ref_chosen_logps = torch.zeros_like(policy_chosen_logps)
                 else:
-                    # Compute the log ratios as rewards without reference model
-                    rewards_chosen = policy_chosen_logps.detach()
-                    rewards_rejected = policy_rejected_logps.detach()
+                    ref_chosen_logps = ref_chosen_logps.to(self.device)
+                if ref_rejected_logps is None:
+                    ref_rejected_logps = torch.zeros_like(policy_rejected_logps)
+                else:
+                    ref_rejected_logps = ref_rejected_logps.to(self.device)
 
-                # convert to float for bfloat16 case
-                scores_chosen_batch = rewards_chosen.float().cpu().numpy().tolist()
-                scores_rejected_batch = rewards_rejected.float().cpu().numpy().tolist()
+                # Compute the log ratios as rewards
+                rewards_chosen = policy_chosen_logps.detach() - ref_chosen_logps.detach()
+                rewards_rejected = policy_rejected_logps.detach() - ref_rejected_logps.detach()
+            else:
+                # Compute the log ratios as rewards without reference model
+                rewards_chosen = policy_chosen_logps.detach()
+                rewards_rejected = policy_rejected_logps.detach()
 
-                # Store the results
-                for ix, (chosen_score, rejected_score) in enumerate(zip(
-                    scores_chosen_batch, scores_rejected_batch)):
-                    res.append(
-                        RewardModelingResponse(
-                            result=(chosen_score, rejected_score),
-                            policy_chosen_logps=policy_chosen_logps[ix].cpu().numpy().tolist(),
-                            policy_rejected_logps=policy_rejected_logps[ix].cpu().numpy().tolist()
-                        )
+            # convert to float for bfloat16 case
+            scores_chosen_batch = rewards_chosen.float().cpu().numpy().tolist()
+            scores_rejected_batch = rewards_rejected.float().cpu().numpy().tolist()
+
+            # Store the results
+            for ix, (chosen_score, rejected_score) in enumerate(zip(
+                scores_chosen_batch, scores_rejected_batch)):
+                res.append(
+                    RewardModelingResponse(
+                        result=(chosen_score, rejected_score),
+                        policy_chosen_logps=policy_chosen_logps[ix].float().cpu().numpy().tolist(),
+                        policy_rejected_logps=policy_rejected_logps[ix].float().cpu().numpy().tolist()
                     )
+                )
 
-                # Clean up GPUs
-                del policy_chosen_logps
-                del policy_rejected_logps
-                del rewards_chosen
-                del rewards_rejected
+            # Clean up GPUs
+            del policy_chosen_logps
+            del policy_rejected_logps
+            del rewards_chosen
+            del rewards_rejected
 
-        return dataset.get_original_order(res)
+        return res
 
 class BaseModel(TransformersModel):
     def __post_init__(self):

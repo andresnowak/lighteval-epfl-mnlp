@@ -186,9 +186,12 @@ def accelerate(  # noqa C901
         args_dict["accelerator"] = accelerator
         args_dict["quantization_config"] = quantization_config
         args_dict["batch_size"] = override_batch_size
+        args_dict["load_in_optimum"] = config["base_params"].get("load_in_optimum", False)
         args_dict["ref_free_norm"] = config["base_params"].get("ref_free_norm", "none")
         args_dict["multichoice_continuations_start_space"] = True
-        args_dict["use_chat_template"] = use_chat_template
+        args_dict["use_chat_template"] = config["base_params"].get("use_chat_template", False)
+        pipeline_params.use_chat_template = args_dict["use_chat_template"]
+        args_dict["eval_mode"] = eval_mode
 
         # Keeping only non null params
         args_dict = {k: v for k, v in args_dict.items() if v is not None}
@@ -214,7 +217,6 @@ def accelerate(  # noqa C901
             rag_model_config.top_k = config["rag_params"]["top_k"]
             rag_model_config.similarity_fn = config["rag_params"]["similarity_fn"]
             rag_model_config.num_chunks = config["rag_params"]["num_chunks"]
-
     else:
         model_args_dict: dict = {k.split("=")[0]: k.split("=")[1] if "=" in k else True for k in model_args.split(",")}
         model_args_dict["accelerator"] = accelerator
