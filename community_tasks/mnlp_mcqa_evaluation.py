@@ -48,7 +48,7 @@ def prompt_creator(question, choices, prompt_type: int=0):
             f"This is part of an assessment on {topic.replace('_', ' ')}. Each question is multiple-choice and requires a single correct answer.\n\n"
         )
 
-        prompt = f"""{instruction}{question}\n{choices}\nProvide only the correct option in this format: Letter. Full answer (e.g., C. Maxwell's equations)\nAnswer:"""
+        prompt = f"""{instruction}{question}\n{choices}\nFor grading purposes, respond with:\nCorrect Option: [LETTER]. [VERBATIM TEXT]\nExample:\nCorrect Option: D. Planck constant\nYour Response:"""
     elif prompt_type == 3:
         topic = "complex STEM concepts typically taught in advanced university courses"
         instruction = (
@@ -62,7 +62,7 @@ def prompt_creator(question, choices, prompt_type: int=0):
             f"Choose the best answer from the options below. Each question tests {topic.replace('_', ' ')}.\n\n"
         )
 
-        prompt = f"""{instruction}{question}\n{choices}\nRespond with the correct letter and answer (e.g., D. Kirchhoff's voltage law).\nAnswer:"""
+        prompt = f"""{instruction}{question}\n{choices}\nRespond with the correct letter and answer (e.g., D. Kirchhoff's voltage law).\nYour final answer is:"""
     elif prompt_type == 5:
         topic = "challenging STEM problems as found on graduate standardized tests"
         instruction = (
@@ -102,7 +102,7 @@ def single_letter(line, task_name: str = None):
     if task_name == "community|mnlp_mcqa_evals_musr":
         prompt, topic, instruction = prompt_creator_musr(question, choices, narrative)
     else:
-        prompt, topic, instruction = prompt_creator(question, choices)
+        prompt, topic, instruction = prompt_creator(question, choices, prompt_type=0)
 
     return Doc(
         task_name=task_name,
@@ -140,7 +140,7 @@ def letter_answer(line, task_name: str):
     if task_name == "community|mnlp_mcqa_evals_musr":
         prompt, topic, instruction = prompt_creator_musr(question, choices, narrative)
     else:
-        prompt, topic, instruction = prompt_creator(question, choices)
+        prompt, topic, instruction = prompt_creator(question, choices, prompt_type=0)
 
     return Doc(
         task_name=task_name,
