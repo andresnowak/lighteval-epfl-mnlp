@@ -48,7 +48,7 @@ def prompt_creator(question, choices, prompt_type: int=0):
             f"This is part of an assessment on {topic.replace('_', ' ')}. Each question is multiple-choice and requires a single correct answer.\n\n"
         )
 
-        prompt = f"""{instruction}{question}\n{choices}\nFor grading purposes, respond with:\nCorrect Option: [LETTER]. [VERBATIM TEXT]\nExample:\nCorrect Option: D. Planck constant\nYour Response:"""
+        prompt = f"""{instruction}{question}\n{choices}\nFor grading purposes, respond with: [LETTER]. [VERBATIM TEXT]\nExample: D. Planck constant\nYour Response:"""
     elif prompt_type == 3:
         topic = "complex STEM concepts typically taught in advanced university courses"
         instruction = (
@@ -152,7 +152,7 @@ def letter_answer(line, task_name: str):
 
 # Define the tasks
 
-prompt_type = letter_answer
+prompt_type = single_letter
 
 task_arc_easy = LightevalTaskConfig(
     name="mnlp_mcqa_evals_arc_easy",
