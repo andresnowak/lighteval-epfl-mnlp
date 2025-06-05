@@ -33,7 +33,6 @@ from lighteval.models.endpoints.inference_providers_model import InferenceProvid
 from lighteval.models.litellm_model import LiteLLMClient
 from lighteval.tasks.requests import Doc
 from lighteval.utils.utils import as_list
-from lighteval.models.model_output import Batch
 
 
 logger = logging.getLogger(__name__)
@@ -156,7 +155,6 @@ class PromptManager:
             role_content_list.append({"role": "user", "content": i})
             role_content_list.append({"role": "assistant", "content": "{model_response}"})
         role_content_list.pop(-1)
-        print(role_content_list)
 
         contexts = []
         offset = 2 if system_prompt is not None else 1
@@ -241,22 +239,9 @@ class PromptManager:
             return output, num_effective_fewshots
 
         elif use_chat_template:
-            chat_preview = self.model.tokenizer.apply_chat_template(output, tokenize=False, add_generation_prompt=True)
-            tokenized = self.model.tokenizer(chat_preview, return_tensors="pt").to(self.model.device)
-            prepared_batch = Batch(
-                input_ids=tokenized["input_ids"],
-                input_mask=tokenized["attention_mask"],
-                input_lengths=[len(tokenized["input_ids"][0])],
-                truncated=[False],
-                padded=[False],
-            )
-            response = self.model._generate(
-                batch=prepared_batch,
-                max_new_tokens=2048,
-                stop_tokens=["</think>"],
-            )
-            all_start = chat_preview + response[0].result[0] + "</think>"
-            return all_start, num_effective_fewshots
+            return self.model.tokenizer.apply_chat_template(
+                output, tokenize=False, add_generation_prompt=True
+            ), num_effective_fewshots
 
         return output, num_effective_fewshots
 
