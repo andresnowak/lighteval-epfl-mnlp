@@ -14,6 +14,9 @@ from .mnlp_mcqa_evals_math_qa import math_qa_extractor
 from .mnlp_mcqa_evals_mcqa_evals import mcqa_evals_extractor
 
 
+random.seed(42)
+
+
 def prompt_creator_musr(question, choices, narrative: str, prompt_type: int=0):
     topic = "knowledge and kills in advanced master-level STEM courses"
     instruction = f"The following are multiple choice questions (with answers) about {topic.replace('_', ' ')}.\n\n"
