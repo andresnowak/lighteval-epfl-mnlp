@@ -13,6 +13,7 @@ from .mnlp_mcqa_evals_nlp4education import nlp4education_extractor
 from .mnlp_mcqa_evals_math_qa import math_qa_extractor
 from .mnlp_mcqa_evals_mcqa_evals import mcqa_evals_extractor
 
+import random
 
 random.seed(42)
 
